@@ -1,0 +1,12 @@
+{
+  "name": "max-bot-smh",
+  "version": "1.0.0",
+  "description": "MAX-бот аэропорта Симашкино",
+  "main": "max-bot.js",
+  "scripts": {
+    "start": "node max-bot.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
