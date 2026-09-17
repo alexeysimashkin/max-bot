@@ -205,57 +205,67 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Новое сообщение
+  // Нажатие callback-кнопки
+  if (update.update_type === 'message_callback') {
+    const cb = update.callback;
+    if (!cb) return;
+    
+    const userId = cb.user?.user_id || update.user_id;
+    let payload;
+    try { payload = typeof cb.payload === 'string' ? JSON.parse(cb.payload) : cb.payload; } catch (e) { return; }
+
+    // ОБЯЗАТЕЛЬНО отвечаем на callback, иначе кнопка "зависает"
+    try {
+      await maxClient.post(`/answers?callback_id=${cb.callback_id}`, {
+        notification: 'OK'
+      });
+    } catch (e) {
+      console.error('Ошибка answer callback:', e.response?.data || e.message);
+    }
+
+    if (payload.cmd === 'date') {
+      userStates[userId] = { step: 'search', date: payload.value };
+      await sendMessage(userId,
+        `🔎 Выбрана дата: ${payload.value === 'today' ? 'Сегодня' : 'Завтра'}\n\nВведите номер рейса, город или код ИАТА (например: SU-1234, Москва, SVO):`,
+        getBackKeyboard());
+      return;
+    }
+    if (payload.cmd === 'back') {
+      userStates[userId] = { step: 'date' };
+      await sendMessage(userId, '📅 Выберите дату:', getDateKeyboard());
+      return;
+    }
+    if (payload.cmd === 'sub') {
+      if (!subscriptions[userId]) subscriptions[userId] = {};
+      subscriptions[userId][payload.flightId] = true;
+      try {
+        const r = await axios.get(`${API_URL}?showDeparted=false`);
+        const f = r.data.find(x => x.id === payload.flightId);
+        if (f) lastStatuses[payload.flightId] = f.computedStatus;
+      } catch (e) {}
+      await sendMessage(userId,
+        `🔔 Вы подписались на рейс.\n\nЯ буду присылать вам уведомления при:\n• начале регистрации\n• окончании регистрации\n• начале посадки\n• окончании посадки\n• задержке\n• отмене рейса`,
+        getSubscribeKeyboard(payload.flightId, true));
+      return;
+    }
+    if (payload.cmd === 'unsub') {
+      if (subscriptions[userId]?.[payload.flightId]) {
+        delete subscriptions[userId][payload.flightId];
+        if (Object.keys(subscriptions[userId]).length === 0) delete subscriptions[userId];
+      }
+      await sendMessage(userId, `🔕 Вы отписались от уведомлений.`, getSubscribeKeyboard(payload.flightId, false));
+      return;
+    }
+    return;
+  }
+
+  // Новое текстовое сообщение
   if (update.update_type === 'message_created') {
     const msg = update.message;
     if (!msg) return;
     const userId = msg.sender?.user_id || update.user_id;
     const text = (msg.body?.text || '').trim();
-    const attachments = msg.body?.attachments || [];
 
-    // Обработка нажатий на кнопки
-    for (const att of attachments) {
-      if (att.type === 'inline_keyboard' && att.payload) {
-        let payload;
-        try { payload = typeof att.payload === 'string' ? JSON.parse(att.payload) : att.payload; } catch (e) { continue; }
-
-        if (payload.cmd === 'date') {
-          userStates[userId] = { step: 'search', date: payload.value };
-          await sendMessage(userId,
-            `🔎 Выбрана дата: ${payload.value === 'today' ? 'Сегодня' : 'Завтра'}\n\nВведите номер рейса, город или код ИАТА (например: SU-1234, Москва, SVO):`,
-            getBackKeyboard());
-          return;
-        }
-        if (payload.cmd === 'back') {
-          userStates[userId] = { step: 'date' };
-          await sendMessage(userId, '📅 Выберите дату:', getDateKeyboard());
-          return;
-        }
-        if (payload.cmd === 'sub') {
-          if (!subscriptions[userId]) subscriptions[userId] = {};
-          subscriptions[userId][payload.flightId] = true;
-          try {
-            const r = await axios.get(`${API_URL}?showDeparted=false`);
-            const f = r.data.find(x => x.id === payload.flightId);
-            if (f) lastStatuses[payload.flightId] = f.computedStatus;
-          } catch (e) {}
-          await sendMessage(userId,
-            `🔔 Вы подписались на рейс.\n\nЯ буду присылать вам уведомления при:\n• начале регистрации\n• окончании регистрации\n• начале посадки\n• окончании посадки\n• задержке\n• отмене рейса`,
-            getSubscribeKeyboard(payload.flightId, true));
-          return;
-        }
-        if (payload.cmd === 'unsub') {
-          if (subscriptions[userId]?.[payload.flightId]) {
-            delete subscriptions[userId][payload.flightId];
-            if (Object.keys(subscriptions[userId]).length === 0) delete subscriptions[userId];
-          }
-          await sendMessage(userId, `🔕 Вы отписались от уведомлений.`, getSubscribeKeyboard(payload.flightId, false));
-          return;
-        }
-      }
-    }
-
-    // Текстовые команды
     const lowerText = text.toLowerCase();
     if (['начать', 'start', '/start', 'привет', 'меню'].includes(lowerText)) {
       userStates[userId] = { step: 'date' };
@@ -274,7 +284,6 @@ async function handleUpdate(update) {
       return;
     }
 
-    // Поиск рейса
     try {
       const response = await axios.get(`${API_URL}?showDeparted=false`);
       const flights = response.data;
