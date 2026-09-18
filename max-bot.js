@@ -6,7 +6,6 @@ const MAX_TOKEN = 'f9LHodD0cOIMKBEfixiw3yITxV1aIV8YY72fM-GfqEMOVkXSZR7fIjc5safl3
 const API_URL = 'https://ar-smh.ru/api/flights';
 const MAX_API = 'https://platform-api2.max.ru';
 
-// Отключаем проверку SSL (нужно для сертификата Минцифры на BotHost)
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const maxClient = axios.create({
@@ -21,7 +20,7 @@ const maxClient = axios.create({
 // ============ ХРАНИЛИЩА ============
 const userStates = {};
 const subscriptions = {};
-const lastStatuses = {};
+const lastFlightStates = {};
 
 // ============ УТИЛИТЫ ============
 function fmtTm(s) {
@@ -76,41 +75,17 @@ function buildNotification(f, statusType) {
 
   switch (statusType) {
     case 'checkin':
-      return `👋 Уважаемый пассажир!
-
-Начинается регистрация на рейс ${flight} вылетающий в ${city} (${iata}). Стойки регистрации: ${counters}
-
-📄 Не забудьте приготовить документ, удостоверяющий личность!`;
+      return `👋 Уважаемый пассажир!\n\nНачинается регистрация на рейс ${flight} вылетающий в ${city} (${iata}). Стойки регистрации: ${counters}\n\n📄 Не забудьте приготовить документ, удостоверяющий личность!`;
     case 'checkin_completed':
-      return `👋 Уважаемый пассажир!
-
-Регистрация на рейс ${flight}, вылетающий в ${city} (${iata}), закончена.
-
-🚶 Посадка на рейс начнётся через несколько минут, выход G${gate}`;
+      return `👋 Уважаемый пассажир!\n\nРегистрация на рейс ${flight}, вылетающий в ${city} (${iata}), закончена.\n\n🚶 Посадка на рейс начнётся через несколько минут, выход G${gate}`;
     case 'boarding':
-      return `👋 Уважаемый пассажир!
-
-Начинается посадка на рейс ${flight} вылетающий в ${city} (${iata}).
-
-🚪 Приглашаем вас пройти к выходу G${gate}. Приготовьте, пожалуйста, паспорт и посадочный талон. Желаем приятного полёта! ✈️`;
+      return `👋 Уважаемый пассажир!\n\nНачинается посадка на рейс ${flight} вылетающий в ${city} (${iata}).\n\n🚪 Приглашаем вас пройти к выходу G${gate}. Приготовьте, пожалуйста, паспорт и посадочный талон. Желаем приятного полёта! ✈️`;
     case 'boarding_completed':
-      return `👋 Уважаемый пассажир!
-
-Закончилась посадка на рейс ${flight} вылетающий в ${city} (${iata}).
-
-🕐 Вылет запланирован на ${fmtDt(f.expectedDeparture || f.scheduledDeparture)}`;
+      return `👋 Уважаемый пассажир!\n\nЗакончилась посадка на рейс ${flight} вылетающий в ${city} (${iata}).\n\n🕐 Вылет запланирован на ${fmtDt(f.expectedDeparture || f.scheduledDeparture)}`;
     case 'delayed':
-      return `👋 Уважаемый пассажир!
-
-⚠️ Вылет вашего рейса ${flight} в ${city} (${iata}) ${fmtDt(f.scheduledDeparture)} задерживается до ${fmtDt(f.expectedDeparture)}.
-
-😔 Приносим извинения за доставленные неудобства!`;
+      return `👋 Уважаемый пассажир!\n\n⚠️ Вылет вашего рейса ${flight} в ${city} (${iata}) ${fmtDt(f.scheduledDeparture)} задерживается до ${fmtDt(f.expectedDeparture)}.\n\n😔 Приносим извинения за доставленные неудобства!`;
     case 'cancelled':
-      return `👋 Уважаемый пассажир!
-
-❌ Вылет вашего рейса ${flight} в ${city} (${iata}) отменён.
-
-📞 Обращайтесь в авиакомпанию за подробной информацией.`;
+      return `👋 Уважаемый пассажир!\n\n❌ Вылет вашего рейса ${flight} в ${city} (${iata}) отменён.\n\n📞 Обращайтесь в авиакомпанию за подробной информацией.`;
     default:
       return null;
   }
@@ -209,12 +184,12 @@ async function handleUpdate(update) {
   if (update.update_type === 'message_callback') {
     const cb = update.callback;
     if (!cb) return;
-    
+
     const userId = cb.user?.user_id || update.user_id;
     let payload;
     try { payload = typeof cb.payload === 'string' ? JSON.parse(cb.payload) : cb.payload; } catch (e) { return; }
 
-    // ОБЯЗАТЕЛЬНО отвечаем на callback, иначе кнопка "зависает"
+    // Обязательный ответ на callback
     try {
       await maxClient.post(`/answers?callback_id=${cb.callback_id}`, {
         notification: 'OK'
@@ -241,7 +216,12 @@ async function handleUpdate(update) {
       try {
         const r = await axios.get(`${API_URL}?showDeparted=false`);
         const f = r.data.find(x => x.id === payload.flightId);
-        if (f) lastStatuses[payload.flightId] = f.computedStatus;
+        if (f) {
+          lastFlightStates[payload.flightId] = {
+            status: f.computedStatus,
+            expected: f.expectedDeparture || null
+          };
+        }
       } catch (e) {}
       await sendMessage(userId,
         `🔔 Вы подписались на рейс.\n\nЯ буду присылать вам уведомления при:\n• начале регистрации\n• окончании регистрации\n• начале посадки\n• окончании посадки\n• задержке\n• отмене рейса`,
@@ -333,29 +313,73 @@ async function checkSubscriptionsAndNotify() {
         if (!flight) continue;
 
         const currentStatus = flight.computedStatus;
-        const oldStatus = lastStatuses[flightId];
+        const currentExpected = flight.expectedDeparture || null;
+        const old = lastFlightStates[flightId];
 
-        if (oldStatus !== currentStatus) {
-          lastStatuses[flightId] = currentStatus;
-          if (oldStatus !== undefined) {
-            const changeType = getStatusChangeType(oldStatus, currentStatus);
-            if (changeType) {
-              const notification = buildNotification(flight, changeType);
-              if (notification) {
-                try {
-                  await sendMessage(parseInt(userId), notification);
-                  console.log(`✅ Уведомление ${userId} о рейсе ${flightId}: ${changeType}`);
-                } catch (e) {
-                  console.error(`❌ Ошибка ${userId}:`, e.message);
-                }
+        if (!old) {
+          lastFlightStates[flightId] = { status: currentStatus, expected: currentExpected };
+          continue;
+        }
+
+        // ============ ПРОВЕРКА ЗАДЕРЖКИ ПО ВРЕМЕНИ ============
+        const sched = new Date(flight.scheduledDeparture);
+        const newExp = currentExpected ? new Date(currentExpected) : null;
+        const oldExp = old.expected ? new Date(old.expected) : null;
+
+        const wasDelayed = oldExp && oldExp > sched;
+        const isDelayed = newExp && newExp > sched;
+
+        if (!wasDelayed && isDelayed) {
+          // Только что поставили задержку
+          const notification = buildNotification(flight, 'delayed');
+          if (notification) {
+            try {
+              await sendMessage(parseInt(userId), notification);
+              console.log(`✅ MAX уведомление о задержке ${userId} (${flightId})`);
+            } catch (e) {
+              console.error(`❌ Ошибка ${userId}:`, e.message);
+            }
+          }
+        } else if (wasDelayed && isDelayed && newExp.getTime() !== oldExp.getTime()) {
+          // Задержка уже была, но время изменилось
+          const notification = buildNotification(flight, 'delayed');
+          if (notification) {
+            try {
+              await sendMessage(parseInt(userId), notification);
+              console.log(`✅ MAX уведомление о новой задержке ${userId} (${flightId})`);
+            } catch (e) {
+              console.error(`❌ Ошибка ${userId}:`, e.message);
+            }
+          }
+        } else if (wasDelayed && !isDelayed) {
+          // Задержку убрали
+          const text = `👋 Уважаемый пассажир!\n\n✈️ Хорошие новости! Ваш рейс ${flight.flightNumber} в ${flight.destination} (${flight.iataCode || ''}) снова вылетает по расписанию — ${fmtDt(flight.scheduledDeparture)}.`;
+          try {
+            await sendMessage(parseInt(userId), text);
+          } catch (e) {}
+        }
+
+        // ============ ПРОВЕРКА СМЕНЫ СТАТУСА ============
+        if (old.status !== currentStatus) {
+          const changeType = getStatusChangeType(old.status, currentStatus);
+          if (changeType && changeType !== 'delayed') {
+            const notification = buildNotification(flight, changeType);
+            if (notification) {
+              try {
+                await sendMessage(parseInt(userId), notification);
+                console.log(`✅ MAX уведомление ${userId} (${changeType})`);
+              } catch (e) {
+                console.error(`❌ Ошибка ${userId}:`, e.message);
               }
             }
           }
         }
+
+        lastFlightStates[flightId] = { status: currentStatus, expected: currentExpected };
       }
     }
   } catch (e) {
-    console.error('Ошибка проверки подписок:', e.message);
+    console.error('MAX проверка подписок:', e.message);
   }
 }
 
